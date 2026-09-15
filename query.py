@@ -7,6 +7,7 @@ from product_detector import detect_product
 # ==========================================
 
 current_product = None
+conversation_history = []
 
 
 print("\nBanking RAG Assistant")
@@ -32,9 +33,7 @@ while True:
 
     detected_product = detect_product(query)
 
-
     if detected_product:
-
         current_product = detected_product
 
         print(
@@ -43,7 +42,7 @@ while True:
 
 
     # --------------------------------------
-    # Check product context
+    # Check product
     # --------------------------------------
 
     if current_product is None:
@@ -56,26 +55,49 @@ while True:
 
 
     # --------------------------------------
+    # Add previous conversation to query
+    # --------------------------------------
+
+    history_text = ""
+
+    for item in conversation_history:
+
+        history_text += (
+            f"\nUser: {item['question']}"
+            f"\nAssistant: {item['answer']}\n"
+        )
+
+
+    
+
+
+    # --------------------------------------
     # Run RAG
     # --------------------------------------
-
     result = run_rag(
         query,
-        current_product
+        current_product,
+        conversation_history
     )
+    
+
+    # --------------------------------------
+    # Store conversation
+    # --------------------------------------
+
+    conversation_history.append({
+        "question": query,
+        "answer": result["answer"]
+    })
 
 
     # --------------------------------------
-    # Answer
+    # Output
     # --------------------------------------
 
     print("\nAssistant:")
     print(result["answer"])
 
-
-    # --------------------------------------
-    # Evidence
-    # --------------------------------------
 
     print("\nEvidence:")
 

@@ -1,56 +1,158 @@
-from retriever import retrieve, client
+from hybrid_retriever import hybrid_retrieve
+from reranker import rerank
 from llm import generate_answer
+from query_rewriter import rewrite_query
 
 
-def run_rag(query, product):
+def run_rag(
+    query,
+    product,
+    conversation_history=None
+):
 
-    # 1. Retrieve relevant chunks
-    results = retrieve(query, product)
+    # -----------------------------
+    # 1. Query rewriting
+    # -----------------------------
 
-    # 2. Check retrieval
-    if not results:
+    rewritten_query = rewrite_query(
+        query,
+        product,
+        conversation_history
+    )
+
+    print("\n==============================")
+    print("QUERY REWRITE")
+    print("==============================")
+
+    print("Original Query:")
+    print(query)
+
+    print("\nRewritten Query:")
+    print(rewritten_query)
+
+
+    # -----------------------------
+    # 2. Hybrid retrieval
+    # -----------------------------
+
+    candidates = hybrid_retrieve(
+        rewritten_query,
+        product
+    )
+
+
+    if not candidates:
+
         return {
             "answer": "No sufficiently relevant information found.",
             "sources": []
         }
 
-    # 3. Build context
+
+    # -----------------------------
+    # 3. Reranking
+    # -----------------------------
+
+    results = rerank(
+        rewritten_query,
+        candidates,
+        top_k=3
+    )
+
+
+    # -----------------------------
+    # 4. Build evidence context
+    # -----------------------------
+
     context_parts = []
 
-    for rank, result in enumerate(results, start=1):
+    for rank, result in enumerate(
+        results,
+        start=1
+    ):
+
+        document = result["document"]
 
         context_parts.append(
             f"""
 Source {rank}
-Document: {result.payload['document']}
-Section: {result.payload['section']}
-Chunk ID: {result.payload['chunk_id']}
+Document: {document.get('document')}
+Product: {document.get('product')}
+Section: {document.get('section')}
+Chunk ID: {document.get('chunk_id')}
+Reranker Score: {result.get('reranker_score'):.4f}
 
 Evidence:
-{result.payload['text']}
+{document.get('text')}
 """
         )
 
-    context = "\n".join(context_parts)
 
-    # 4. Generate answer
-    answer = generate_answer(query, context)
+    retrieved_context = "\n".join(
+        context_parts
+    )
 
-    # 5. Prepare sources
+
+    # -----------------------------
+    # 5. Conversation history
+    # -----------------------------
+
+    history_text = ""
+
+    if conversation_history:
+
+        for item in conversation_history:
+
+            history_text += (
+                f"\nUser: {item['question']}"
+                f"\nAssistant: {item['answer']}\n"
+            )
+
+
+    # -----------------------------
+    # 6. LLM context
+    # -----------------------------
+
+    llm_context = f"""
+Conversation History:
+{history_text}
+
+Retrieved Evidence:
+{retrieved_context}
+"""
+
+
+    # -----------------------------
+    # 7. Generate answer
+    # -----------------------------
+
+    answer = generate_answer(
+        query,
+        llm_context
+    )
+
+
+    # -----------------------------
+    # 8. Return sources
+    # -----------------------------
+
     sources = []
 
     for result in results:
 
+        document = result["document"]
+
         sources.append({
-            "document": result.payload["document"],
-            "document_type": result.payload["document_type"],
-            "policy_version": result.payload["policy_version"],
-            "effective_date": result.payload["effective_date"],
-            "section": result.payload["section"],
-            "chunk_id": result.payload["chunk_id"],
-            "score": result.score,
-            "text": result.payload["text"]
-})
+            "document": document.get("document"),
+            "product": document.get("product"),
+            "section": document.get("section"),
+            "chunk_id": document.get("chunk_id"),
+            "reranker_score": result.get(
+                "reranker_score"
+            ),
+            "text": document.get("text")
+        })
+
 
     return {
         "answer": answer,
