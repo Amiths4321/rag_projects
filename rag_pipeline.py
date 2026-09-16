@@ -2,6 +2,19 @@ from hybrid_retriever import hybrid_retrieve
 from reranker import rerank
 from llm import generate_answer
 from query_rewriter import rewrite_query
+from confidence import calculate_confidence
+from audit_logger import save_audit_result
+from conflict_detector import detect_policy_conflict
+from decision_layer import make_retrieval_decision
+from retrieval_debug import save_retrieval_debug
+from performance_tracker import start_timer, elapsed_time
+from retrieval_quality import check_retrieval_quality
+from rag_status import get_rag_status
+from request_id import generate_request_id
+from evidence_builder import build_evidence
+from citation_validator import validate_citations
+from citation_support_validator import validate_citation_support
+from review_queue import add_to_review_queue
 
 
 def run_rag(
@@ -10,10 +23,15 @@ def run_rag(
     conversation_history=None
 ):
 
-    # -----------------------------
+    # --------------------------------
     # 1. Query rewriting
-    # -----------------------------
+    # --------------------------------
+    request_id = generate_request_id()
 
+    print("\n==============================")
+    print("REQUEST")
+    print("==============================")
+    print("Request ID:", request_id)
     rewritten_query = rewrite_query(
         query,
         product,
@@ -23,35 +41,74 @@ def run_rag(
     print("\n==============================")
     print("QUERY REWRITE")
     print("==============================")
-
     print("Original Query:")
     print(query)
-
     print("\nRewritten Query:")
     print(rewritten_query)
 
-
-    # -----------------------------
+    # --------------------------------
     # 2. Hybrid retrieval
-    # -----------------------------
+    # --------------------------------
+
+    retrieval_start = start_timer()
 
     candidates = hybrid_retrieve(
         rewritten_query,
         product
     )
 
+    retrieval_time = elapsed_time(retrieval_start)
+
+    # --------------------------------
+    # 3. No retrieval results
+    # --------------------------------
 
     if not candidates:
 
+        answer = "No sufficiently relevant information found."
+        confidence = {
+            "score": 0.0,
+            "level": "LOW"
+        }
+        performance = {
+            "retrieval_seconds": retrieval_time,
+            "reranking_seconds": 0.0
+        }
+        add_to_review_queue(
+            request_id=request_id,
+            query=query,
+            product=product,
+            reason="NO_CANDIDATES",
+            answer=answer,
+            evidence=[]
+        )
+
+        save_audit_result(
+            query=query,
+            rewritten_query=rewritten_query,
+            product=product,
+            answer=answer,
+            confidence=confidence,
+            review_required=False,
+            sources=[],
+            conflicts=[],
+            performance=performance,
+            request_id=request_id
+                )
+
         return {
-            "answer": "No sufficiently relevant information found.",
-            "sources": []
+            "answer": answer,
+            "confidence": confidence,
+            "review_required": True,
+            "sources": [],
+            "performance": performance
         }
 
+        # --------------------------------
+    # 4. Reranking & Quality Check
+    # --------------------------------
 
-    # -----------------------------
-    # 3. Reranking
-    # -----------------------------
+    rerank_start = start_timer()
 
     results = rerank(
         rewritten_query,
@@ -59,102 +116,188 @@ def run_rag(
         top_k=3
     )
 
+    rerank_time = elapsed_time(rerank_start)
 
-    # -----------------------------
-    # 4. Build evidence context
-    # -----------------------------
+    quality = check_retrieval_quality(results)
 
-    context_parts = []
+    performance = {
+        "retrieval_seconds": retrieval_time,
+        "reranking_seconds": rerank_time
+    }
 
-    for rank, result in enumerate(
-        results,
-        start=1
-    ):
+    confidence = calculate_confidence(results)
 
-        document = result["document"]
+    conflicts = detect_policy_conflict(results)
 
-        context_parts.append(
-            f"""
-Source {rank}
-Document: {document.get('document')}
-Product: {document.get('product')}
-Section: {document.get('section')}
-Chunk ID: {document.get('chunk_id')}
-Reranker Score: {result.get('reranker_score'):.4f}
+    # --------------------------------
+    # 5. Build structured evidence
+    # --------------------------------
 
-Evidence:
-{document.get('text')}
-"""
-        )
+    evidence = build_evidence(results)
 
+    # --------------------------------
+    # 6. Generate LLM answer
+    # --------------------------------
 
-    retrieved_context = "\n".join(
-        context_parts
-    )
-
-
-    # -----------------------------
-    # 5. Conversation history
-    # -----------------------------
-
-    history_text = ""
-
-    if conversation_history:
-
-        for item in conversation_history:
-
-            history_text += (
-                f"\nUser: {item['question']}"
-                f"\nAssistant: {item['answer']}\n"
-            )
-
-
-    # -----------------------------
-    # 6. LLM context
-    # -----------------------------
-
-    llm_context = f"""
-Conversation History:
-{history_text}
-
-Retrieved Evidence:
-{retrieved_context}
-"""
-
-
-    # -----------------------------
-    # 7. Generate answer
-    # -----------------------------
+    llm_start = start_timer()
 
     answer = generate_answer(
         query,
-        llm_context
+        evidence
     )
 
+    llm_time = elapsed_time(llm_start)
 
-    # -----------------------------
-    # 8. Return sources
-    # -----------------------------
+    performance["llm_seconds"] = llm_time
 
-    sources = []
+    performance["total_seconds"] = round(
+        performance["retrieval_seconds"]
+        + performance["reranking_seconds"]
+        + performance["llm_seconds"],
+        4
+    )
 
-    for result in results:
+    # --------------------------------
+    # 7. Validate citations
+    # --------------------------------
 
-        document = result["document"]
+    citation_result = validate_citations(
+        answer,
+        evidence
+    )
 
-        sources.append({
-            "document": document.get("document"),
-            "product": document.get("product"),
-            "section": document.get("section"),
-            "chunk_id": document.get("chunk_id"),
-            "reranker_score": result.get(
-                "reranker_score"
-            ),
-            "text": document.get("text")
-        })
+    support_result = validate_citation_support(
+        answer,
+        evidence
+    )
 
+    citation_valid = (
+        citation_result["valid"]
+        and support_result["valid"]
+    )
+
+    # --------------------------------
+    # 8. Invalid citation → review
+    # --------------------------------
+
+    if not citation_valid:
+
+        review_answer = (
+            "The generated answer could not be "
+            "validated against the retrieved evidence. "
+            "Manual review is required."
+        )
+        add_to_review_queue(
+            request_id=request_id,
+            query=query,
+            product=product,
+            reason="INVALID_CITATION",
+            answer=answer,
+            evidence=evidence
+        )
+        
+        save_audit_result(
+            query=query,
+            rewritten_query=rewritten_query,
+            product=product,
+            answer=answer,
+            confidence=confidence,
+            review_required=True,
+            sources=evidence,
+            conflicts=conflicts,
+            review_reason="INVALID_CITATION",
+            performance=performance,
+            request_id=request_id,
+            citation_validation=citation_result,
+            citation_support=support_result
+        )
+
+        add_to_review_queue(
+            request_id=request_id,
+            query=query,
+            product=product,
+            reason="NO_CANDIDATES",
+            answer=answer,
+            evidence=[]
+        )
+        
+        return {
+            "answer": review_answer,
+            "status": "MANUAL_REVIEW",
+            "review_required": True,
+            "review_reason": "INVALID_CITATION",
+            "confidence": confidence,
+            "evidence": evidence,
+            "citation_validation": citation_result,
+            "citation_support": support_result,
+            "conflicts": conflicts,
+            "performance": performance
+        }
+
+    # --------------------------------
+    # 9. Successful audit
+    # --------------------------------
+
+    save_audit_result(
+        query=query,
+        rewritten_query=rewritten_query,
+        product=product,
+        answer=answer,
+        confidence=confidence,
+        review_required=False,
+        sources=evidence,
+        conflicts=conflicts,
+        review_reason=None,
+        performance=performance,
+        request_id=request_id,
+        citation_validation=citation_result,
+        citation_support=support_result
+    )
+
+    # --------------------------------
+    # 10. Final response
+    # --------------------------------
 
     return {
         "answer": answer,
-        "sources": sources
+        "status": "COMPLETED",
+        "review_required": False,
+        "review_reason": None,
+        "confidence": confidence,
+        "evidence": evidence,
+        "citation_validation": citation_result,
+        "citation_support": support_result,
+        "conflicts": conflicts,
+        "performance": performance
     }
+
+# --------------------------------
+# Command-line runner
+# --------------------------------
+
+if __name__ == "__main__":
+
+    question = input("\nEnter your question: ").strip()
+
+    product = "home_loan"
+
+    result = run_rag(
+        query=question,
+        product=product
+    )
+
+    print("\n==============================")
+    print("FINAL RESULT")
+    print("==============================")
+
+    print("\nAnswer:")
+    print(result["answer"])
+
+    print("\nStatus:")
+    print(result.get("status"))
+
+    print("\nConfidence:")
+    print(result.get("confidence"))
+
+    print("\nPerformance:")
+    print(result.get("performance"))

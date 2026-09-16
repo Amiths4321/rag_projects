@@ -1,14 +1,16 @@
 import ollama
 
+MODEL_NAME = "llama3.2"
+
 from prompt import build_rag_prompt
 
 
-MODEL_NAME = "llama3.2"
+def generate_answer(query, evidence):
 
-
-def generate_answer(query, context):
-
-    prompt = build_rag_prompt(query, context)
+    prompt = build_rag_prompt(
+        query,
+        evidence
+    )
 
     response = ollama.chat(
         model=MODEL_NAME,

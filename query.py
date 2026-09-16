@@ -1,6 +1,6 @@
-from rag_pipeline import run_rag, client
+from rag_pipeline import run_rag
 from product_detector import detect_product
-
+from retriever import client
 
 # ==========================================
 # SESSION CONTEXT
@@ -80,7 +80,14 @@ while True:
         conversation_history
     )
     
-
+    if result is None:
+        print("Error: run_rag returned None.")
+        # Handle the fallback safely
+        answer = "An error occurred while processing your request."
+        sources = []
+    else:
+        answer = result["answer"]
+        sources = result.get("sources", [])
     # --------------------------------------
     # Store conversation
     # --------------------------------------
@@ -98,16 +105,37 @@ while True:
     print("\nAssistant:")
     print(result["answer"])
 
+    print("\n==============================")
+    print("CONFIDENCE")
+    print("==============================")
 
-    print("\nEvidence:")
+    print(
+        f"Score: "
+        f"{result['confidence']['score']:.4f}"
+    )
 
-    for source in result["sources"]:
+    print(
+        f"Level: "
+        f"{result['confidence']['level']}"
+    )
+
+    print("\n==============================")
+    print("REVIEW STATUS")
+    print("==============================")
+
+    if result["review_required"]:
+        print("MANUAL REVIEW REQUIRED")
+    else:
+        print("AUTOMATED ANSWER")
+        print("\nEvidence:")
+
+    for source in result["evidence"]:
 
         print(
-            f"- {source['document']} | "
-            f"{source['section']} | "
-            f"Chunk {source['chunk_id']} | "
-            f"Score {source['score']:.4f}"
+            f"- {source.get('document', 'N/A')} | "
+            f"{source.get('section', 'N/A')} | "
+            f"Chunk {source.get('chunk_id', 'N/A')} | "
+            f"Score {source.get('score', 0.0):.4f}"
         )
 
 

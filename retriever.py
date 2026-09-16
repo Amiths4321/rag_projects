@@ -24,14 +24,18 @@ def get_latest_effective_date(product):
 
     results, _ = client.scroll(
         collection_name=COLLECTION_NAME,
+
         scroll_filter=Filter(
             must=[
                 FieldCondition(
                     key="product",
-                    match=MatchValue(value=product)
+                    match=MatchValue(
+                        value=product
+                    )
                 )
             ]
         ),
+
         limit=1000,
         with_payload=True,
         with_vectors=False
@@ -44,7 +48,9 @@ def get_latest_effective_date(product):
 
     for result in results:
 
-        date_text = result.payload.get("effective_date")
+        date_text = result.payload.get(
+            "effective_date"
+        )
 
         if date_text:
 
@@ -58,7 +64,9 @@ def get_latest_effective_date(product):
     if not dates:
         return None
 
-    return max(dates).strftime("%Y-%m-%d")
+    return max(dates).strftime(
+        "%Y-%m-%d"
+    )
 
 
 def retrieve(query, product):
@@ -67,24 +75,38 @@ def retrieve(query, product):
 
     latest_date = get_latest_effective_date(product)
 
+    print("\n==============================")
+    print("POLICY VERSION FILTER")
+    print("==============================")
+
+    print("Product:", product)
+    print("Latest Effective Date:", latest_date)
+    
     if latest_date is None:
         return []
 
     results = client.query_points(
         collection_name=COLLECTION_NAME,
         query=query_vector,
+
         query_filter=Filter(
             must=[
                 FieldCondition(
                     key="product",
-                    match=MatchValue(value=product)
+                    match=MatchValue(
+                        value=product
+                    )
                 ),
+
                 FieldCondition(
                     key="effective_date",
-                    match=MatchValue(value=latest_date)
+                    match=MatchValue(
+                        value=latest_date
+                    )
                 )
             ]
         ),
+
         limit=TOP_K
     ).points
 
@@ -93,5 +115,3 @@ def retrieve(query, product):
         for result in results
         if result.score >= SCORE_THRESHOLD
     ]
-
-    return filtered_results
